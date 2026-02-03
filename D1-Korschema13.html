@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Körschema</title>
+  <style>
+    :root { color-scheme: light; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; max-width: 900px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .bar { display:flex; gap:8px; flex-wrap: wrap; align-items: center; margin: 12px 0 16px; }
+    input, button { font: inherit; padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; }
+    input { flex: 1 1 220px; }
+    #dur { max-width: 180px; }
+    button { cursor: pointer; background: #fff; }
+    button:hover { border-color:#bbb; }
+    .hint { color:#666; font-size: 13px; margin-top: 6px; }
+    ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+    .item {
+      display: grid;
+      grid-template-columns: 42px 1fr 140px 90px;
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid #eee;
+      border-radius: 14px;
+      background: #fff;
+    }
+    .handle {
+      width: 42px; height: 42px; border-radius: 12px;
+      border: 1px solid #eee;
+      display:flex; align-items:center; justify-content:center;
+      cursor: grab; user-select: none;
+      font-size: 18px;
+    }
+    .name { font-weight: 600; }
+    .meta { color:#666; font-size: 13px; margin-top: 2px; }
+    .durInput { width: 100%; }
+    .danger { border-color:#f1c1c1; background:#fff7f7; }
+    .footer {
+      margin-top: 18px; padding-top: 12px; border-top: 1px solid #eee;
+      display:flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .total { font-size: 16px; font-weight: 700; }
+    .small { font-size: 13px; color:#666; }
+    .ghost { opacity: 0.5; }
+  </style>
+</head>
+<body>
+  <h1>Körschema</h1>
+
+  <div class="bar">
+    <input id="name" placeholder="Namn (t.ex. Telegram, Inslag, Väder…)" />
+    <input id="dur" placeholder="Tid (t.ex. 20s, 2m, 01:30, 90)" />
+    <button id="add">Lägg till</button>
+    <button id="clear" title="Rensa listan">Rensa</button>
+  </div>
+  <div class="hint">
+    Tidformat: <b>20s</b>, <b>2m</b>, <b>2m20s</b>, <b>01:30</b> (mm:ss), <b>90</b> (sekunder).
+  </div>
+
+  <ul id="list" aria-label="Poster"></ul>
+
+  <div class="footer">
+    <div class="total" id="total">Total: 0:00</div>
+    <div class="small">Tips: dra i “⋮⋮” för att flytta rader. Ändringar sparas automatiskt.</div>
+  </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const listEl = $("list");
+  const nameEl = $("name");
+  const durEl  = $("dur");
+  const addBtn = $("add");
+  const clearBtn = $("clear");
+  const totalEl = $("total");
+
+  let items = load() ?? [
+    { id: crypto.randomUUID(), name: "Telegram", seconds: 20 },
+    { id: crypto.randomUUID(), name: "Inslag",   seconds: 120 }
+  ];
+
+  function save() {
+    localStorage.setItem("korschema_v1", JSON.stringify(items));
+  }
+  function load() {
+    try { return JSON.parse(localStorage.getItem("korschema_v1")); }
+    catch { return null; }
+  }
+
+  function formatTime(totalSeconds) {
+    totalSeconds = Math.max(0, Math.round(totalSeconds));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+    return `${m}:${String(s).padStart(2,"0")}`;
+  }
+
+  // Accepts: "20s", "2m", "2m20s", "01:30", "90" (seconds), "1:02:03"
+  function parseDuration(str) {
+    if (!str) return null;
+    str = String(str).trim().toLowerCase();
+
+    // Colon formats
+    if (/^\d+:\d{2}(:\d{2})?$/.test(str)) {
+      const parts = str.split(":").map(Number);
+      if (parts.some(n => Number.isNaN(n))) return null;
+      if (parts.length === 2) return parts[0]*60 + parts[1];
+      if (parts.length === 3) return parts[0]*3600 + parts[1]*60 + parts[2];
+    }
+
+    // Pure number => seconds
+    if (/^\d+$/.test(str)) return Number(str);
+
+    // Token formats like 2m20s, 1h2m3s
+    let seconds = 0;
+    const re = /(\d+)\s*(h|m|s)/g;
+    let match, found = false;
+    while ((match = re.exec(str)) !== null) {
+      found = true;
+      const val = Number(match[1]);
+      const unit = match[2];
+      if (unit === "h") seconds += val * 3600;
+      if (unit === "m") seconds += val * 60;
+      if (unit === "s") seconds += val;
+    }
+    return found ? seconds : null;
+  }
+
+  function recalcTotal() {
+    const sum = items.reduce((a, it) => a + (it.seconds || 0), 0);
+    totalEl.textContent = `Total: ${formatTime(sum)}`;
+  }
+
+  function render() {
+    listEl.innerHTML = "";
+    items.forEach((it, idx) => {
+      const li = document.createElement("li");
+      li.className = "item";
+      li.draggable = true;
+      li.dataset.id = it.id;
+
+      const handle = document.createElement("div");
+      handle.className = "handle";
+      handle.textContent = "⋮⋮";
+      handle.title = "Dra för att flytta";
+
+      const textWrap = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = it.name || "(utan namn)";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `Rad ${idx+1}`;
+      textWrap.appendChild(name);
+      textWrap.appendChild(meta);
+
+      const durInput = document.createElement("input");
+      durInput.className = "durInput";
+      durInput.value = formatTime(it.seconds || 0);
+      durInput.title = "Ändra tid (t.ex. 20s, 2m, 01:30)";
+      durInput.addEventListener("change", () => {
+        const parsed = parseDuration(durInput.value);
+        if (parsed == null) {
+          durInput.classList.add("danger");
+          return;
+        }
+        durInput.classList.remove("danger");
+        it.seconds = parsed;
+        durInput.value = formatTime(parsed);
+        save(); recalcTotal();
+      });
+
+      durInput.addEventListener("focus", () => {
+        // show a friendlier editable format on focus
+        durInput.value = it.seconds != null ? `${it.seconds}s` : "";
+      });
+      durInput.addEventListener("blur", () => {
+        if (!durInput.classList.contains("danger"))
+          durInput.value = formatTime(it.seconds || 0);
+      });
+
+      const delBtn = document.createElement("button");
+      delBtn.textContent = "Ta bort";
+      delBtn.addEventListener("click", () => {
+        items = items.filter(x => x.id !== it.id);
+        save(); render(); recalcTotal();
+      });
+
+      li.appendChild(handle);
+      li.appendChild(textWrap);
+      li.appendChild(durInput);
+      li.appendChild(delBtn);
+
+      // Drag & drop reorder
+      li.addEventListener("dragstart", (e) => {
+        li.classList.add("ghost");
+        e.dataTransfer.setData("text/plain", it.id);
+        e.dataTransfer.effectAllowed = "move";
+      });
+      li.addEventListener("dragend", () => li.classList.remove("ghost"));
+      li.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+      });
+      li.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const draggedId = e.dataTransfer.getData("text/plain");
+        if (!draggedId || draggedId === it.id) return;
+
+        const from = items.findIndex(x => x.id === draggedId);
+        const to   = items.findIndex(x => x.id === it.id);
+        if (from < 0 || to < 0) return;
+
+        const [moved] = items.splice(from, 1);
+        items.splice(to, 0, moved);
+
+        save(); render(); recalcTotal();
+      });
+
+      // Quick rename on click
+      name.addEventListener("click", () => {
+        const newName = prompt("Nytt namn:", it.name ?? "");
+        if (newName === null) return;
+        it.name = newName.trim();
+        save(); render(); recalcTotal();
+      });
+
+      listEl.appendChild(li);
+    });
+
+    recalcTotal();
+  }
+
+  function addItem() {
+    const n = nameEl.value.trim() || "Nytt inslag";
+    const parsed = parseDuration(durEl.value);
+    const seconds = parsed ?? 0;
+
+    items.push({ id: crypto.randomUUID(), name: n, seconds });
+    nameEl.value = "";
+    durEl.value = "";
+    save(); render(); recalcTotal();
+    nameEl.focus();
+  }
+
+  addBtn.addEventListener("click", addItem);
+  clearBtn.addEventListener("click", () => {
+    if (!confirm("Rensa hela listan?")) return;
+    items = [];
+    save(); render(); recalcTotal();
+  });
+
+  durEl.addEventListener("keydown", (e) => { if (e.key === "Enter") addItem(); });
+  nameEl.addEventListener("keydown", (e) => { if (e.key === "Enter") durEl.focus(); });
+
+  render();
+})();
+</script>
+</body>
+</html>
